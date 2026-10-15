@@ -51,35 +51,60 @@ export default function KitchenApp() {
     return unsubscribe;
   }, []);
 
+  // Re-render every 15s so ticket ages (and their colour) stay current.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(id);
+  }, []);
+
   const openTickets = Object.values(tickets).sort((a, b) => a.placedAt - b.placedAt);
 
   return (
     <div className="kitchen-page">
       <div className="kitchen-header">
-        <h1>Kitchen Display</h1>
-        <p className={`kitchen-status ${connected ? "live" : ""}`}>
-          {connected ? "Live — consuming outbox events" : "Waiting for events…"}
-        </p>
+        <div>
+          <h1>Kitchen Display</h1>
+          <p className={`kitchen-status ${connected ? "live" : ""}`}>
+            {connected ? "Live — consuming outbox events" : "Waiting for events…"}
+          </p>
+        </div>
+        <div className="kitchen-count">
+          <strong>{openTickets.length}</strong>
+          <span>open tickets</span>
+        </div>
       </div>
       {openTickets.length === 0 ? (
-        <div className="ticket-empty">No open tickets</div>
+        <div className="ticket-empty">
+          <div>🍽</div>
+          No open tickets — kitchen is clear
+        </div>
       ) : (
         <div className="ticket-board">
-          {openTickets.map((t) => (
-            <div className="ticket" key={t.orderId}>
-              <div className="ticket-header">
-                <span>#{t.orderId.slice(0, 8)}</span>
-                <span>{new Date(t.placedAt).toLocaleTimeString()}</span>
+          {openTickets.map((t) => {
+            const mins = Math.max(0, Math.floor((now - t.placedAt) / 60000));
+            const age = mins >= 15 ? "late" : mins >= 8 ? "aging" : "";
+            return (
+              <div className={`ticket ${age}`} key={t.orderId}>
+                <div className="ticket-header">
+                  <strong>#{t.orderId.slice(0, 8)}</strong>
+                  <span>
+                    {new Date(t.placedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    {" · "}
+                    {mins}m
+                  </span>
+                </div>
+                <ul>
+                  {t.items.map((i, idx) => (
+                    <li key={idx}>
+                      <span className="qty">{i.quantity}×</span>
+                      <span>{i.name}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <ul>
-                {t.items.map((i, idx) => (
-                  <li key={idx}>
-                    {i.quantity}× {i.name}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
 import { api, DlqRow, MenuItem, Order, OutboxEvent } from "./api";
 
 const POLL_MS = 2000;
@@ -9,17 +9,22 @@ function randomCustomerId(): string {
   return crypto.randomUUID();
 }
 
+function money(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export default function App() {
   const [customerId, setCustomerId] = useState(randomCustomerId());
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [newItemName, setNewItemName] = useState("");
-  const [newItemPrice, setNewItemPrice] = useState(1000);
+  const [newItemPrice, setNewItemPrice] = useState("10.00");
   const [orders, setOrders] = useState<Order[]>([]);
   const [outbox, setOutbox] = useState<OutboxEvent[]>([]);
   const [dlq, setDlq] = useState<DlqRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [online, setOnline] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -33,8 +38,9 @@ export default function App() {
       setOrders(o);
       setOutbox(ob);
       setDlq(d);
-      setError(null);
+      setOnline(true);
     } catch (err) {
+      setOnline(false);
       setError(err instanceof Error ? err.message : "Failed to reach API");
     }
   }, []);
@@ -47,12 +53,18 @@ export default function App() {
 
   const pendingCount = outbox.filter((e) => e.status === "PENDING").length;
   const sentCount = outbox.filter((e) => e.status === "SENT").length;
+  const availableMenu = menu.filter((m) => m.is_available);
 
   const selectedItems = Object.entries(quantities).filter(([, qty]) => qty > 0);
+  const itemCount = selectedItems.reduce((sum, [, qty]) => sum + qty, 0);
   const orderTotalCents = selectedItems.reduce((sum, [menuItemId, qty]) => {
     const item = menu.find((m) => m.id === menuItemId);
     return sum + (item ? item.price_cents * qty : 0);
   }, 0);
+
+  function setQty(id: string, qty: number) {
+    setQuantities((q) => ({ ...q, [id]: Math.max(0, qty) }));
+  }
 
   async function handleCreateOrder(e: FormEvent) {
     e.preventDefault();
@@ -72,6 +84,7 @@ export default function App() {
       );
       setCustomerId(randomCustomerId());
       setQuantities({});
+      setError(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create order");
@@ -82,11 +95,12 @@ export default function App() {
 
   async function handleAddMenuItem(e: FormEvent) {
     e.preventDefault();
-    if (!newItemName.trim() || newItemPrice <= 0) return;
+    const priceCents = Math.round(Number(newItemPrice) * 100);
+    if (!newItemName.trim() || !(priceCents > 0)) return;
     try {
-      await api.createMenuItem(newItemName.trim(), newItemPrice);
+      await api.createMenuItem(newItemName.trim(), priceCents);
       setNewItemName("");
-      setNewItemPrice(1000);
+      setNewItemPrice("10.00");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add menu item");
@@ -130,315 +144,428 @@ export default function App() {
   }
 
   return (
-    <div className="page">
-      <header>
-        <h1>Restaurant Order &amp; Kitchen Display</h1>
-        <p className="subtitle">
-          Placing an order writes the order + <code>OrderPlaced</code> event
-          atomically. Status updates (<code>OrderReady</code>,{" "}
-          <code>OrderCancelled</code>) go through the same outbox. See the{" "}
-          <a href="/kitchen.html">Kitchen Display</a> for the live ticket
-          screen.
-        </p>
-      </header>
+    <div className="app">
+      <nav className="topbar">
+        <div className="brand">
+          <span className="brand-mark">🍕</span>
+          <span>Outbox Kitchen</span>
+        </div>
+        <div className="topbar-right">
+          <span className={`live-pill ${online ? "on" : "off"}`}>
+            <span className="dot" />
+            {online ? "Live" : "API offline"}
+          </span>
+          <a className="btn btn-ghost" href="/kitchen.html" target="_blank" rel="noreferrer">
+            Open Kitchen Display ↗
+          </a>
+        </div>
+      </nav>
 
-      <Pipeline pending={pendingCount} sent={sentCount} dlq={dlq.length} />
+      <main className="page">
+        <header className="hero">
+          <h1>Restaurant Order &amp; Kitchen Display</h1>
+          <p>
+            Placing an order writes the order and an <code>OrderPlaced</code> event in a
+            single transaction. Status changes (<code>OrderReady</code>,{" "}
+            <code>OrderCancelled</code>) flow through the same outbox.
+          </p>
+        </header>
 
-      {error && <div className="banner error">{error}</div>}
+        <Pipeline
+          orders={orders.length}
+          pending={pendingCount}
+          sent={sentCount}
+          dlq={dlq.length}
+        />
 
-      <div className="grid">
-        <section className="card">
-          <h2>Menu (admin)</h2>
-          <p className="hint">Plain CRUD — no outbox involved, it's reference data.</p>
-          <form onSubmit={handleAddMenuItem}>
-            <label>
-              Item name
+        {error && (
+          <div className="banner" role="alert">
+            <span>{error}</span>
+            <button className="banner-close" onClick={() => setError(null)} aria-label="Dismiss">
+              ×
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-main">
+          <section className="card">
+            <CardHeader
+              title="Place order"
+              hint={
+                <>
+                  Writes <code>orders</code>, <code>order_items</code> and{" "}
+                  <code>outbox</code> in one transaction.
+                </>
+              }
+            />
+            <form onSubmit={handleCreateOrder} className="order-form">
+              <label className="field">
+                <span className="field-label">Customer ID</span>
+                <div className="input-group">
+                  <input
+                    className="mono"
+                    value={customerId}
+                    onChange={(e) => setCustomerId(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-icon"
+                    title="Generate new ID"
+                    onClick={() => setCustomerId(randomCustomerId())}
+                  >
+                    ↻
+                  </button>
+                </div>
+              </label>
+
+              <div className="menu-picker">
+                {availableMenu.map((item) => {
+                  const qty = quantities[item.id] ?? 0;
+                  return (
+                    <div key={item.id} className={`pick ${qty > 0 ? "picked" : ""}`}>
+                      <div className="pick-info">
+                        <div className="pick-name">{item.name}</div>
+                        <div className="pick-price">{money(item.price_cents)}</div>
+                      </div>
+                      <div className="stepper">
+                        <button
+                          type="button"
+                          onClick={() => setQty(item.id, qty - 1)}
+                          disabled={qty === 0}
+                          aria-label={`Remove one ${item.name}`}
+                        >
+                          −
+                        </button>
+                        <span>{qty}</span>
+                        <button
+                          type="button"
+                          onClick={() => setQty(item.id, qty + 1)}
+                          aria-label={`Add one ${item.name}`}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {availableMenu.length === 0 && (
+                  <Empty>Add an available menu item first.</Empty>
+                )}
+              </div>
+
+              <div className="checkout">
+                <div>
+                  <div className="checkout-label">
+                    {itemCount} item{itemCount === 1 ? "" : "s"}
+                  </div>
+                  <div className="checkout-total">{money(orderTotalCents)}</div>
+                </div>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={submitting || itemCount === 0}
+                >
+                  {submitting ? "Placing…" : "Place order"}
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="card">
+            <CardHeader
+              title="Orders"
+              count={orders.length}
+              hint="Mark ready or cancel — both write an outbox event."
+            />
+            <div className="order-list">
+              {orders.map((o) => (
+                <div key={o.id} className="order">
+                  <div className="order-main">
+                    <div className="order-top">
+                      <span className="mono muted">#{o.id.slice(0, 8)}</span>
+                      <StatusBadge status={o.status} />
+                    </div>
+                    <div className="order-items">
+                      {o.items.map((i) => `${i.quantity}× ${i.name}`).join(" · ")}
+                    </div>
+                    <div className="order-meta">
+                      <span className="mono muted">cust {o.customer_id.slice(0, 8)}</span>
+                      <strong>{money(o.total_cents)}</strong>
+                    </div>
+                  </div>
+                  {o.status === "PLACED" && (
+                    <div className="order-actions">
+                      <button
+                        className="btn btn-success btn-sm"
+                        onClick={() => handleOrderStatus(o.id, "READY")}
+                      >
+                        Ready
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => handleOrderStatus(o.id, "CANCELLED")}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {orders.length === 0 && <Empty>No orders yet</Empty>}
+            </div>
+          </section>
+        </div>
+
+        <div className="grid grid-secondary">
+          <section className="card">
+            <CardHeader
+              title="Menu"
+              tag="admin"
+              hint="Plain CRUD — no outbox involved, it's reference data."
+            />
+            <form onSubmit={handleAddMenuItem} className="inline-form">
               <input
                 value={newItemName}
                 onChange={(e) => setNewItemName(e.target.value)}
-                placeholder="e.g. Margherita Pizza"
+                placeholder="Item name, e.g. Margherita"
+                aria-label="Item name"
                 required
               />
-            </label>
-            <label>
-              Price (cents)
-              <input
-                type="number"
-                min={1}
-                value={newItemPrice}
-                onChange={(e) => setNewItemPrice(Number(e.target.value))}
-                required
-              />
-            </label>
-            <button type="submit">Add item</button>
-          </form>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Price</th>
-                <th>Available</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {menu.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td>${(item.price_cents / 100).toFixed(2)}</td>
-                  <td>
-                    <button className="secondary" onClick={() => handleToggleAvailability(item)}>
-                      {item.is_available ? "Available" : "86'd"}
-                    </button>
-                  </td>
-                  <td>
-                    <button className="secondary" onClick={() => handleDeleteMenuItem(item.id)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {menu.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="empty">
-                    No menu items yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-
-        <section className="card">
-          <h2>Place order</h2>
-          <p className="hint">
-            Writes to <code>orders</code>, <code>order_items</code> and{" "}
-            <code>outbox</code> in one transaction.
-          </p>
-          <form onSubmit={handleCreateOrder}>
-            <label>
-              Customer ID
-              <input
-                value={customerId}
-                onChange={(e) => setCustomerId(e.target.value)}
-                required
-              />
-            </label>
-            {menu
-              .filter((m) => m.is_available)
-              .map((item) => (
-                <label key={item.id} className="item-row">
-                  {item.name} (${(item.price_cents / 100).toFixed(2)})
-                  <input
-                    type="number"
-                    min={0}
-                    value={quantities[item.id] ?? 0}
-                    onChange={(e) =>
-                      setQuantities((q) => ({ ...q, [item.id]: Number(e.target.value) }))
-                    }
-                  />
-                </label>
-              ))}
-            {menu.filter((m) => m.is_available).length === 0 && (
-              <p className="hint">Add an available menu item first.</p>
-            )}
-            <p className="hint">Total: ${(orderTotalCents / 100).toFixed(2)}</p>
-            <button type="submit" disabled={submitting}>
-              {submitting ? "Placing…" : "Place order"}
-            </button>
-          </form>
-        </section>
-
-        <section className="card">
-          <h2>Orders</h2>
-          <p className="hint">Mark ready or cancel — both write an outbox event.</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Customer</th>
-                <th>Items</th>
-                <th>Total</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.map((o) => (
-                <tr key={o.id}>
-                  <td className="mono">{o.customer_id.slice(0, 8)}…</td>
-                  <td>{o.items.map((i) => `${i.quantity}× ${i.name}`).join(", ")}</td>
-                  <td>${(o.total_cents / 100).toFixed(2)}</td>
-                  <td>
-                    <span className={`badge ${o.status.toLowerCase()}`}>{o.status}</span>
-                  </td>
-                  <td>
-                    {o.status === "PLACED" && (
-                      <>
-                        <button className="secondary" onClick={() => handleOrderStatus(o.id, "READY")}>
-                          Ready
-                        </button>{" "}
-                        <button className="secondary" onClick={() => handleOrderStatus(o.id, "CANCELLED")}>
-                          Cancel
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {orders.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="empty">
-                    No orders yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-
-        <section className="card">
-          <h2>Outbox</h2>
-          <p className="hint">
-            Relay polls this table and publishes PENDING rows to the broker.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Aggregate</th>
-                <th>Status</th>
-                <th>Attempts</th>
-                <th>Occurred</th>
-              </tr>
-            </thead>
-            <tbody>
-              {outbox.map((e) => (
-                <tr key={e.id}>
-                  <td>{e.event_type}</td>
-                  <td className="mono">{e.aggregate_id.slice(0, 8)}…</td>
-                  <td>
-                    <span className={`badge ${e.status.toLowerCase()}`}>
-                      {e.status}
-                    </span>
-                  </td>
-                  <td>{e.attempts}</td>
-                  <td>{new Date(e.occurred_at).toLocaleTimeString()}</td>
-                </tr>
-              ))}
-              {outbox.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="empty">
-                    No outbox events yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-
-        <section className="card">
-          <div className="card-header">
-            <h2>Dead-letter queue</h2>
-            {dlq.length > 0 && (
-              <button className="secondary" onClick={handleReplay}>
-                Replay all
+              <div className="price-input">
+                <span>$</span>
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={newItemPrice}
+                  onChange={(e) => setNewItemPrice(e.target.value)}
+                  aria-label="Price in dollars"
+                  required
+                />
+              </div>
+              <button type="submit" className="btn btn-primary">
+                Add
               </button>
-            )}
-          </div>
-          <p className="hint">
-            Poison rows land here after repeated publish failures, for
-            human/automation follow-up.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Attempts</th>
-                <th>Last error</th>
-                <th>Moved</th>
-              </tr>
-            </thead>
-            <tbody>
-              {dlq.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.event_type}</td>
-                  <td>{row.attempts}</td>
-                  <td className="error-text">{row.last_error}</td>
-                  <td>{new Date(row.moved_at).toLocaleTimeString()}</td>
-                </tr>
+            </form>
+            <ul className="menu-list">
+              {menu.map((item) => (
+                <li key={item.id} className={item.is_available ? "" : "unavailable"}>
+                  <div className="menu-name">{item.name}</div>
+                  <div className="menu-price">{money(item.price_cents)}</div>
+                  <button
+                    className={`switch ${item.is_available ? "on" : ""}`}
+                    onClick={() => handleToggleAvailability(item)}
+                    title={item.is_available ? "Available — click to 86 it" : "86'd — click to restore"}
+                    aria-pressed={item.is_available}
+                  >
+                    <span className="switch-knob" />
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-icon danger"
+                    onClick={() => handleDeleteMenuItem(item.id)}
+                    title="Delete item"
+                    aria-label={`Delete ${item.name}`}
+                  >
+                    🗑
+                  </button>
+                </li>
               ))}
-              {dlq.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="empty">
-                    Empty — nothing dead-lettered
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+              {menu.length === 0 && <Empty>No menu items yet</Empty>}
+            </ul>
+          </section>
+
+          <section className="card">
+            <CardHeader
+              title="Outbox"
+              count={outbox.length}
+              hint="The relay polls this table and publishes PENDING rows to the broker."
+            />
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Aggregate</th>
+                    <th>Status</th>
+                    <th className="num">Tries</th>
+                    <th className="num">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {outbox.map((e) => (
+                    <tr key={e.id}>
+                      <td className="event-name">{e.event_type}</td>
+                      <td className="mono muted">{e.aggregate_id.slice(0, 8)}</td>
+                      <td>
+                        <StatusBadge status={e.status} />
+                      </td>
+                      <td className="num">{e.attempts}</td>
+                      <td className="num muted">
+                        {new Date(e.occurred_at).toLocaleTimeString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {outbox.length === 0 && <Empty>No outbox events yet</Empty>}
+            </div>
+          </section>
+        </div>
+
+        <section className={`card dlq-card ${dlq.length > 0 ? "has-items" : ""}`}>
+          <CardHeader
+            title="Dead-letter queue"
+            count={dlq.length}
+            hint="Poison rows land here after repeated publish failures, for human/automation follow-up."
+            action={
+              dlq.length > 0 && (
+                <button className="btn btn-primary btn-sm" onClick={handleReplay}>
+                  Replay all
+                </button>
+              )
+            }
+          />
+          {dlq.length > 0 ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th className="num">Tries</th>
+                    <th>Last error</th>
+                    <th className="num">Moved</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dlq.map((row) => (
+                    <tr key={row.id}>
+                      <td className="event-name">{row.event_type}</td>
+                      <td className="num">{row.attempts}</td>
+                      <td className="error-text">{row.last_error}</td>
+                      <td className="num muted">
+                        {new Date(row.moved_at).toLocaleTimeString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty>All clear — nothing dead-lettered ✓</Empty>
+          )}
         </section>
-      </div>
+      </main>
     </div>
   );
 }
 
+function CardHeader({
+  title,
+  hint,
+  count,
+  tag,
+  action,
+}: {
+  title: string;
+  hint?: ReactNode;
+  count?: number;
+  tag?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="card-header">
+      <div>
+        <h2>
+          {title}
+          {count !== undefined && <span className="count">{count}</span>}
+          {tag && <span className="tag">{tag}</span>}
+        </h2>
+        {hint && <p className="hint">{hint}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return <span className={`badge ${status.toLowerCase()}`}>{status.toLowerCase()}</span>;
+}
+
+function Empty({ children }: { children: ReactNode }) {
+  return <div className="empty">{children}</div>;
+}
+
 function Pipeline({
+  orders,
   pending,
   sent,
   dlq,
 }: {
+  orders: number;
   pending: number;
   sent: number;
   dlq: number;
 }) {
   return (
     <div className="pipeline">
-      <Stage label="Domain write" desc="orders + order_items" />
+      <Stage step={1} label="Domain write" value={orders} unit="orders" />
       <Arrow />
-      <Stage label="Outbox row" desc={`${pending} pending`} highlight={pending > 0} />
+      <Stage
+        step={2}
+        label="Outbox"
+        value={pending}
+        unit="pending"
+        tone={pending > 0 ? "warn" : undefined}
+      />
       <Arrow />
-      <Stage label="Relay" desc="polls & publishes" />
+      <Stage step={3} label="Relay" value="●" unit="polling" tone="active" />
       <Arrow />
-      <Stage label="Kitchen Display" desc={`${sent} sent`} />
-      <Branch label="DLQ" desc={`${dlq} poison`} alert={dlq > 0} />
+      <Stage step={4} label="Kitchen" value={sent} unit="delivered" tone="ok" />
+      <div className="pipeline-divider" />
+      <Stage
+        label="DLQ"
+        value={dlq}
+        unit="poison"
+        tone={dlq > 0 ? "bad" : undefined}
+        dashed
+      />
     </div>
   );
 }
 
 function Stage({
+  step,
   label,
-  desc,
-  highlight,
+  value,
+  unit,
+  tone,
+  dashed,
 }: {
+  step?: number;
   label: string;
-  desc: string;
-  highlight?: boolean;
+  value: number | string;
+  unit: string;
+  tone?: "warn" | "ok" | "bad" | "active";
+  dashed?: boolean;
 }) {
   return (
-    <div className={`stage ${highlight ? "highlight" : ""}`}>
-      <div className="stage-label">{label}</div>
-      <div className="stage-desc">{desc}</div>
-    </div>
-  );
-}
-
-function Branch({
-  label,
-  desc,
-  alert,
-}: {
-  label: string;
-  desc: string;
-  alert?: boolean;
-}) {
-  return (
-    <div className={`branch ${alert ? "alert" : ""}`}>
-      <div className="stage-label">{label}</div>
-      <div className="stage-desc">{desc}</div>
+    <div className={`stage ${tone ?? ""} ${dashed ? "dashed" : ""}`}>
+      <div className="stage-label">
+        {step && <span className="step">{step}</span>}
+        {label}
+      </div>
+      <div className="stage-value">
+        {value} <span>{unit}</span>
+      </div>
     </div>
   );
 }
 
 function Arrow() {
-  return <div className="arrow">→</div>;
+  return (
+    <svg className="arrow" width="20" height="20" viewBox="0 0 20 20" aria-hidden>
+      <path d="M4 10h11m-4-4 4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
