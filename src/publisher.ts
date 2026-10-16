@@ -13,14 +13,21 @@ export interface Publisher {
 }
 
 /**
- * Default publisher used by the demo: just logs. Set SIMULATE_FAILURES=true
- * in .env to randomly throw, so you can watch the relay's retry/backoff/DLQ
- * logic kick in without needing a real broker.
+ * Default publisher used by the demo: just logs. SIMULATE_FAILURES in .env
+ * lets you watch the relay's retry/backoff/DLQ logic without a real broker:
+ *   true   — randomly throw on 25% of publishes
+ *   poison — always throw for events whose payload mentions "poison" (e.g. an
+ *            order containing a menu item named "Poison Pizza"), so a
+ *            specific row deterministically ends up in the DLQ
  */
 export class ConsolePublisher implements Publisher {
   async publish(topic: string, event: OutboundEvent): Promise<void> {
-    if (process.env.SIMULATE_FAILURES === "true" && Math.random() < 0.25) {
+    const mode = process.env.SIMULATE_FAILURES;
+    if (mode === "true" && Math.random() < 0.25) {
       throw new Error("Simulated broker failure");
+    }
+    if (mode === "poison" && /poison/i.test(JSON.stringify(event.payload))) {
+      throw new Error("Simulated poison message: broker rejected payload");
     }
     console.log(
       `[publish] topic=${topic} id=${event.id} type=${event.type} payload=${JSON.stringify(

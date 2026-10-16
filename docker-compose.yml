@@ -1,0 +1,24 @@
+# Postgres for local development. Matches DATABASE_URL in .env.example.
+# On first start the scripts in ./migrations are applied automatically
+# (they're idempotent, so running `npm run migrate` afterwards is also safe).
+services:
+  postgres:
+    image: postgres:16
+    container_name: outbox-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: outbox_demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d outbox_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

@@ -45,13 +45,28 @@ orders(...) + order_items(...)      outbox(id PK, aggregate_id, type, payload_js
 
 ## Setup
 
-Requires Postgres and Node 18+.
+Requires Docker Desktop (running) and Node 18+.
 
 ```bash
+docker compose up -d        # Postgres 16 on localhost:5432, db "outbox_demo"
 npm install
-cp .env.example .env        # point DATABASE_URL at your Postgres
+cp .env.example .env        # defaults already match docker-compose.yml
 npm run migrate             # creates menu_items / orders / order_items / outbox / outbox_dlq
 ```
+
+### Troubleshooting: "Failed to list menu"
+
+The API is up but can't query Postgres. Check the `npm run server` terminal
+for the real error:
+
+| Error in server terminal | Fix |
+|---|---|
+| `ECONNREFUSED 127.0.0.1:5432` | Docker isn't running → start Docker Desktop, then `docker compose up -d` |
+| `database "outbox_demo" does not exist` | Container was created without the DB name → `docker compose down -v` then `docker compose up -d` |
+| `relation "menu_items" does not exist` | Tables missing → `npm run migrate` |
+| `password authentication failed for user "postgres"` | Another Postgres (e.g. a local Windows install) already owns port 5432 → stop that service, or change the port mapping to `"5433:5432"` and set `DATABASE_URL=...@localhost:5433/outbox_demo` in `.env` |
+
+Reset everything (deletes all data): `docker compose down -v && docker compose up -d`.
 
 ### Option A — CLI demo (no UI)
 
